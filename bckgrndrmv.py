@@ -1,8 +1,10 @@
 """
-Usuwa czarną ramkę i czarne tło z PNG – zamienia je na przezroczystość.
-Piksele uznane za czerń (R,G,B poniżej progu) dostają alpha=0.
+Usuwa od czarnej okrągłej ramki na zewnątrz – wszystko na zewnątrz wewnętrznej
+krawędzi tej ramki (w tym ramka i szare tło) staje się przezroczyste.
+Środek (logo na białym) zostaje.
 """
 
+import math
 from pathlib import Path
 
 try:
@@ -10,34 +12,62 @@ try:
 except ImportError:
     raise ImportError("Wymagana biblioteka Pillow: pip install Pillow")
 
-# Próg: max(R,G,B) <= BLACK_THRESHOLD → uznaj za czerń i ustaw alpha=0 (podbij przy „ciemnej” ramce)
-BLACK_THRESHOLD = 80
+# Próg: max(R,G,B) < RING_THRESHOLD uznajemy za czarną ramkę (wykrywanie krawędzi)
+RING_THRESHOLD = 40
+# O ile pikseli zmniejszyć promień względem wykrytej krawędzi (usuwa szary/ramkę przy ostrej krawędzi)
+SHRINK_PX = 10
+# Kątów do próbkowania promienia
+ANGLE_STEPS = 360
 
 
-def _pixel_stats(input_path: str | Path) -> None:
-    """Wypisuje statystyki max(R,G,B) w obrazie – do doboru progu."""
-    img = Image.open(input_path).convert("RGBA")
-    pixels = list(img.getdata())
-    values = [max(r, g, b) for r, g, b, _ in pixels]
-    values.sort()
+def _find_inner_radius(
+    img: Image.Image, cx: float, cy: float, black_threshold: int, shrink_px: float = 1.0
+) -> float:
+    """Wykrywa wewnętrzny promień czarnej ramki: dla każdego kąta szuka pierwszego czarnego piksela wzdłuż promienia od środka. shrink_px odejmowane od promienia."""
+    w, h = img.size
+    pix = img.load()
+    max_r = math.ceil(math.hypot(w, h) / 2)
+    radii = []
+
+    for i in range(ANGLE_STEPS):
+        angle = 2 * math.pi * i / ANGLE_STEPS
+        dx, dy = math.cos(angle), math.sin(angle)
+        for r in range(1, max_r + 1):
+            x = int(cx + r * dx)
+            y = int(cy + r * dy)
+            if 0 <= x < w and 0 <= y < h:
+                p = pix[x, y]
+                if max(p[0], p[1], p[2]) < black_threshold:
+                    radii.append(r)
+                    break
+        else:
+            radii.append(max_r)
+    return max(0.0, median(radii) - shrink_px)
+
+
+def median(values: list[float]) -> float:
     n = len(values)
-    p = lambda q: values[int((n - 1) * q / 100)] if n else 0
-    print(f"max(R,G,B) w obrazie: min={values[0]}, 5%={p(5)}, 25%={p(25)}, 50%={p(50)}, 75%={p(75)}, 95%={p(95)}, max={values[-1]}")
-    print("Ustaw próg między wartościami 'tła' a 'ramki/grafiki', np. python bckgrndrmv.py 006.png '' 50")
+    if not n:
+        return 0.0
+    s = sorted(values)
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
 
 
-def remove_black_as_transparent(
+def remove_outside_ring_as_transparent(
     input_path: str | Path,
     output_path: str | Path | None = None,
     *,
-    black_threshold: int = BLACK_THRESHOLD,
+    ring_threshold: int = RING_THRESHOLD,
+    shrink_px: float = SHRINK_PX,
 ) -> Path:
     """
-    Wczytuje PNG, zamienia piksele czarne (i ciemne) na przezroczyste, zapisuje PNG.
+    Wykrywa wewnętrzną krawędź czarnej okrągłej ramki, wszystko na zewnątrz (ramka + tło)
+    ustawia na przezroczystość. W środku zostaje logo (białe + grafika).
 
     @param input_path Ścieżka do pliku PNG
-    @param output_path Ścieżka wynikowa (domyślnie: a{nazwa}.png obok wejścia, np. 006.png → a006.png)
-    @param black_threshold Piksele z max(R,G,B) <= tej wartości stają się przezroczyste
+    @param output_path Ścieżka wynikowa (domyślnie: a{nazwa}.png)
+    @param ring_threshold max(R,G,B) < ta wartość = piksel czarnej ramki (do wykrywania okręgu)
+    @param shrink_px o ile pikseli zmniejszyć promień (więcej = mniejszy okrąg, mniej szarego wokół)
     @returns Ścieżka do zapisanego pliku
     """
     input_path = Path(input_path)
@@ -49,14 +79,22 @@ def remove_black_as_transparent(
         output_path = input_path.parent / f"a{input_path.stem}.png"
 
     img = Image.open(input_path).convert("RGBA")
+    w, h = img.size
+    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
+
+    radius = _find_inner_radius(img, cx, cy, ring_threshold, shrink_px)
+    pix = img.load()
     pixels = list(img.getdata())
 
     new_data = []
-    for r, g, b, a in pixels:
-        if max(r, g, b) <= black_threshold:
-            new_data.append((0, 0, 0, 0))
-        else:
-            new_data.append((r, g, b, a))
+    for y in range(h):
+        for x in range(w):
+            dist = math.hypot(x - cx, y - cy)
+            if dist <= radius:
+                idx = y * w + x
+                new_data.append(pixels[idx])
+            else:
+                new_data.append((0, 0, 0, 0))
 
     img.putdata(new_data)
     img.save(output_path, format="PNG")
@@ -66,13 +104,20 @@ def remove_black_as_transparent(
 if __name__ == "__main__":
     import sys
 
-    if "--stats" in sys.argv:
-        inp = next((Path(a) for a in sys.argv[1:] if a != "--stats" and a.strip()), Path(__file__).parent / "006.png")
-        _pixel_stats(inp)
-        sys.exit(0)
-
     inp = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent / "006.png"
-    out = Path(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2].strip() else None
-    threshold = int(sys.argv[3]) if len(sys.argv) > 3 else BLACK_THRESHOLD
-    result = remove_black_as_transparent(inp, out, black_threshold=threshold)
+    out = None
+    threshold = RING_THRESHOLD
+    shrink = SHRINK_PX
+    if len(sys.argv) > 2 and sys.argv[2].strip():
+        if sys.argv[2].strip().isdigit():
+            threshold = int(sys.argv[2])
+            if len(sys.argv) > 3 and sys.argv[3].strip().isdigit():
+                shrink = int(sys.argv[3])
+        else:
+            out = Path(sys.argv[2])
+            if len(sys.argv) > 3 and sys.argv[3].strip().isdigit():
+                threshold = int(sys.argv[3])
+            if len(sys.argv) > 4 and sys.argv[4].strip().isdigit():
+                shrink = int(sys.argv[4])
+    result = remove_outside_ring_as_transparent(inp, out, ring_threshold=threshold, shrink_px=shrink)
     print(result)
