@@ -12,13 +12,17 @@ RING_THRESHOLD = 40
 SHRINK_PX = 25
 
 
-def _median(values: list[float]) -> float:
+def _percentile(values: list[float], p: float) -> float:
+    """p w 0..100. Zwraca percentyl (np. 90 = 90. percentyl – ignoruje dolne odchyłki)."""
+    if not values:
+        return 0.0
     s = sorted(values)
-    n = len(s)
-    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+    idx = min(int(len(s) * p / 100), len(s) - 1)
+    return s[idx]
 
 
-def _inner_radius(img: Image.Image, cx: float, cy: float, thresh: int, shrink: float) -> float:
+def _inner_radius(img: Image.Image, cx: float, cy: float, thresh: int, shrink: float) -> tuple[float, float]:
+    """Zwraca (promień_po_shrinku, promień_surowy). Używa 90. percentyla, żeby ignorować wczesne fałszywe trafienia (ciemne piksele w logo)."""
     w, h = img.size
     pix = img.load()
     max_r = math.ceil(math.hypot(w, h) / 2)
@@ -33,7 +37,8 @@ def _inner_radius(img: Image.Image, cx: float, cy: float, thresh: int, shrink: f
                 break
         else:
             radii.append(max_r)
-    return max(0.0, _median(radii) - shrink)
+    raw = _percentile(radii, 90)
+    return max(0.0, raw - shrink), raw
 
 
 def remove_outside_ring_as_transparent(
@@ -42,7 +47,8 @@ def remove_outside_ring_as_transparent(
     *,
     ring_threshold: int = RING_THRESHOLD,
     shrink_px: float = SHRINK_PX,
-) -> Path:
+) -> tuple[Path, float]:
+    """Zwraca (ścieżka_zapisana, promień_surowy_przed_shrink)."""
     input_path = Path(input_path)
     if not input_path.exists():
         raise FileNotFoundError(f"Nie znaleziono pliku: {input_path}")
@@ -54,7 +60,7 @@ def remove_outside_ring_as_transparent(
     img = Image.open(input_path).convert("RGBA")
     w, h = img.size
     cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
-    radius = _inner_radius(img, cx, cy, ring_threshold, shrink_px)
+    radius, raw_radius = _inner_radius(img, cx, cy, ring_threshold, shrink_px)
     pixels = list(img.getdata())
 
     new_data = []
@@ -66,14 +72,15 @@ def remove_outside_ring_as_transparent(
                 new_data.append((0, 0, 0, 0))
     img.putdata(new_data)
     img.save(output_path, format="PNG")
-    return output_path
+    return output_path, raw_radius
 
 
 if __name__ == "__main__":
     import sys
 
-    inp = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent / "006.png"
+    path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.cwd()
     out, thresh, shrink = None, RING_THRESHOLD, SHRINK_PX
+
     if len(sys.argv) > 2 and sys.argv[2].strip():
         if sys.argv[2].strip().isdigit():
             thresh = int(sys.argv[2])
@@ -85,4 +92,14 @@ if __name__ == "__main__":
                 thresh = int(sys.argv[3])
             if len(sys.argv) > 4 and sys.argv[4].strip().isdigit():
                 shrink = int(sys.argv[4])
-    print(remove_outside_ring_as_transparent(inp, out, ring_threshold=thresh, shrink_px=shrink))
+
+    if path.is_dir():
+        for f in sorted(path.glob("*.png")):
+            if f.stem.startswith("a"):
+                continue
+            out_path, raw_r = remove_outside_ring_as_transparent(f, None, ring_threshold=thresh, shrink_px=shrink)
+            print(f"{f.name} → promień {raw_r:.0f} → {out_path.name}")
+    else:
+        inp = path if path.is_file() else Path(__file__).parent / "006.png"
+        out_path, raw_r = remove_outside_ring_as_transparent(inp, out, ring_threshold=thresh, shrink_px=shrink)
+        print(out_path, f"(promień {raw_r:.0f})")
