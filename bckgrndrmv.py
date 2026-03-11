@@ -9,7 +9,7 @@ except ImportError:
     raise ImportError("Wymagana biblioteka Pillow: pip install Pillow")
 
 RING_THRESHOLD = 40
-SHRINK_PX = 25
+SHRINK_PX = 40
 
 
 def _percentile(values: list[float], p: float) -> float:
