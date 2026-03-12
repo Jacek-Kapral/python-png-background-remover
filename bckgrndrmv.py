@@ -58,7 +58,7 @@ if __name__ == "__main__":
 
     path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.cwd()
     out = None
-    radius = DEFAULT_RADIUS
+    radius: float | None = None
 
     if len(sys.argv) > 2 and sys.argv[2].strip():
         a2 = sys.argv[2].strip()
@@ -68,6 +68,16 @@ if __name__ == "__main__":
             out = Path(a2)
             if len(sys.argv) > 3 and sys.argv[3].strip().replace(".", "", 1).isdigit():
                 radius = float(sys.argv[3])
+
+    if radius is None:
+        try:
+            user = input(f"Promień koła w pikselach [domyślnie {DEFAULT_RADIUS}]: ").strip()
+            if user and user.replace(".", "", 1).isdigit():
+                radius = float(user)
+            else:
+                radius = DEFAULT_RADIUS
+        except EOFError:
+            radius = DEFAULT_RADIUS
 
     if path.is_dir():
         for f in sorted(path.glob("*.png")):
